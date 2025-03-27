@@ -125,7 +125,7 @@
     ```
     Find which tectonic setting a sample originates from, based on a modified version
     of the USGS map of tectonic provinces of the world
-    (c.f. https://commons.wikimedia.org/wiki/File:World_geologic_provinces.jpg)
+    (c.f. https://web.archive.org/web/20150426000812/http://earthquake.usgs.gov/data/crust/type.html)
 
     Settings:
     ```
