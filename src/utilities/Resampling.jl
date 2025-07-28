@@ -909,6 +909,104 @@
     export bin_bsr_ratio_medians
 
 
+    """
+    ```julia
+    (c, m, el, eu) = constproportion(binbsrfunction::Function, dataset::Dict, xelem, [yelem | numelem, denomelem], xmin::Number, xmax::Number, nbins::Integer; 
+        \tnorm_by = dataset["SiO2"], 
+        \tnorm_bins = [43,55,65,78], 
+        \tx_sigma = dataset[xelem*"_sigma"], 
+        \t[y_sigma = dataset[yelem*"_sigma"] | num_sigma = dataset[numelem*"_sigma"], denom_sigma = dataset[denomelem*"_sigma"]],
+        \tnresamplings = 1000,
+        \tp = 0.2,
+    )
+    ```
+    Call `binbsrfunction` repeatedly for each interval in `norm_bins` and return the results
+    weighted by the fraction of `norm_by` that falls in each bin implied by `norm_bins`.
+
+    By default, combines the results assuming constant proportions of mafic, intermediate, and felsic 
+    lithologies, following the approach of Keller and Harrison 2020 (doi: 10.1073/pnas.2009431117)
+
+    ### Examples
+    ```julia
+    julia> c,m,el,eu = constproportion(bin_bsr_means, dataset, "Age", "K2O", 0, 4000, 40);
+
+    julia> c,m,el,eu = constproportion(bin_bsr_ratio_medians, dataset, "Age", "La", "Yb", 0, 4000, 40);
+    ```
+    """
+    function constproportion(binbsrfunction::Function, dataset::Union{Dict,NamedTuple}, xelem, yelem, xmin::Number, xmax::Number, nbins::Integer; 
+            norm_by = dataset isa NamedTuple ? dataset[:SiO2] : dataset["SiO2"], 
+            norm_bins = [43,55,65,78], 
+            x_sigma = dataset isa NamedTuple ? dataset[Symbol(String(xelem)*"_sigma")] : dataset[xelem*"_sigma"], 
+            y_sigma = dataset isa NamedTuple ? dataset[Symbol(String(yelem)*"_sigma")] : dataset[yelem*"_sigma"], 
+            nresamplings = 1000,
+            p = fill(0.2, length(norm_by)),
+        )
+        x = dataset isa NamedTuple ? dataset[Symbol(xelem)] : dataset[xelem]
+        y = dataset isa NamedTuple ? dataset[Symbol(yelem)] : dataset[yelem]
+
+        c = zeros(nbins)
+        m = zeros(nbins)
+        el = zeros(nbins)
+        eu = zeros(nbins)
+        for i in firstindex(norm_bins):lastindex(norm_bins)-1
+            # Find the samples we're looking for
+            t = (norm_bins[i] .< norm_by .< norm_bins[i+1]) .& (y .> 0)
+
+            # See what proportion of the modern crust falls in this norm_bin
+            prop = sum((norm_bins[i] .< norm_by .< norm_bins[i+1]) .& (p .> 0)) / sum((norm_bins[1] .< norm_by .< norm_bins[end]) .& (p .> 0))
+
+            # Resample, returning binned means and uncertainties
+            # (c = bincenters, m = mean, el = lower 95% CI, eu = upper 95% CI)
+            (c[:],m1,el1,eu1) = binbsrfunction(x[t], y[t], xmin, xmax, nbins; x_sigma=x_sigma[t], y_sigma=y_sigma[t], p=p[t], nresamplings)
+
+            m .+= prop.*m1
+            el .+= prop.*el1
+            eu .+= prop.*eu1
+        end
+        el ./= sqrt(length(norm_bins)-1) # Standard error
+        eu ./= sqrt(length(norm_bins)-1) # Standard error
+
+        return c, m, el, eu
+    end
+    function constproportion(binbsrfunction::Function, dataset::Union{Dict,NamedTuple}, xelem, numelem, denomelem, xmin::Number, xmax::Number, nbins::Integer; 
+            norm_by = dataset isa NamedTuple ? dataset[:SiO2] : dataset["SiO2"],
+            norm_bins = [43,55,65,78], 
+            x_sigma = dataset isa NamedTuple ? dataset[Symbol(String(xelem)*"_sigma")] : dataset[xelem*"_sigma"],
+            num_sigma = dataset isa NamedTuple ?  dataset[Symbol(String(numelem)*"_sigma")] : dataset[numelem*"_sigma"],
+            denom_sigma = dataset isa NamedTuple ? dataset[Symbol(String(denomelem)*"_sigma")] : dataset[denomelem*"_sigma"],
+            nresamplings = 1000,
+            p = fill(0.2, length(norm_by)),
+        )
+        x = dataset isa NamedTuple ? dataset[Symbol(xelem)] : dataset[xelem]
+        num = dataset isa NamedTuple ? dataset[Symbol(numelem)] : dataset[numelem]
+        denom = dataset isa NamedTuple ? dataset[Symbol(denomelem)] : dataset[denomelem]
+        
+        c = zeros(nbins)
+        m = zeros(nbins)
+        el = zeros(nbins)
+        eu = zeros(nbins)
+        for i in firstindex(norm_bins):lastindex(norm_bins)-1
+            # Find the samples we're looking for
+            t = (norm_bins[i] .< norm_by .< norm_bins[i+1]) .& (num.>0) .& (denom.>0)
+
+            # See what proportion of the modern crust falls in this norm_bin
+            prop = sum((norm_bins[i] .< norm_by .< norm_bins[i+1]) .& (p .> 0)) / sum((norm_bins[1] .< norm_by .< norm_bins[end]) .& (p .> 0))
+
+            # Resample, returning binned means and uncertainties
+            # (c = bincenters, m = mean, el = lower 95% CI, eu = upper 95% CI)
+            (c[:],m1,el1,eu1) = binbsrfunction(x[t],num[t],denom[t],xmin,xmax,nbins; x_sigma=x_sigma[t], num_sigma=num_sigma[t], denom_sigma=denom_sigma[t], p=p[t], nresamplings)
+
+            m .+= prop.*m1
+            el .+= prop.*el1
+            eu .+= prop.*eu1
+        end
+        el ./= sqrt(length(norm_bins)-1) # Standard error
+        eu ./= sqrt(length(norm_bins)-1) # Standard error
+
+        return c, m, el, eu
+    end
+    export constproportion
+
 ## --- Quick Monte Carlo binning/interpolation functions
 
     function mcfit(x::AbstractVector, σx::AbstractVector, y::AbstractVector, σy::AbstractVector,
@@ -1077,7 +1175,7 @@
             @batch for g ∈ eachindex(spatialscaleᵣ)
                 for h ∈ eachindex(agescale)
                     kᵢ = 0.0
-                    @inbounds for j ∈ 1:N
+                    @inbounds @simd ivdep for j ∈ 1:N
                         kᵢⱼ = 1.0 / ((spatialdistᵣ[j]/spatialscaleᵣ[g])^lp + 1.0) + 1.0 / ((abs(age[i] - age[j])/agescale[h])^lp + 1.0)
                         kᵢ += kᵢⱼ
                     end
@@ -1149,44 +1247,38 @@
 
     """
     ```julia
-    k = invweight(nums::AbstractArray, scale::Number; lp=2)
+    k = invweight(x::AbstractArray, xscale::Number; lp=2)
     ```
 
-    Find the inverse weights for a single array `nums` for a given `scale`, and
+    Find the inverse weights for a single array `x` for a given `xscale`, and
     exponent `lp` (default lp = 2).
 
     Returns an array k where k[i] is the "inverse weight" for element i of the
     input array.
     """
-    function invweight(nums::AbstractArray, scale::Number; lp=2)
-        numsₘ = materialize(nums)
-        if any(isnan, numsₘ)
-            k = fill(Inf, length(numsₘ))
-            t = @. !isnan(numsₘ)
-            k[t] .= invweight_nonans(numsₘ[t], scale, lp,)
+    function invweight(x::AbstractArray, xscale::Number; lp=2)
+        xₘ = materialize(x)
+        if any(isnan, xₘ)
+            k = fill(Inf, length(xₘ))
+            t = @. !isnan(xₘ)
+            k[t] .= invweight_nonans(xₘ[t], xscale, lp,)
             return k
         else
-            return invweight_nonans(numsₘ, scale, lp,)
+            return invweight_nonans(xₘ, xscale, lp,)
         end
     end
-    function invweight_nonans(nums::AbstractArray, scale::Number, lp::Number)
+    function invweight_nonans(x::AbstractArray, xscale::Number, lp::Number)
 
-        N = length(nums)
+        N = length(x)
         k = Array{Float64}(undef, N)
         p = Progress(N÷10, desc="Calculating weights: ")
         @inbounds @batch for i ∈ 1:N
-            if isnan(nums[i])
-                # If there is missing data, set k=inf for weight=0
-                k[i] = Inf
-            else
-                # Otherwise, calculate weight
-                kᵢ = 0.0
-                @turbo for j ∈ 1:N
-                    kᵢⱼ = 1.0 / ( (abs(nums[i] - nums[j])/scale)^lp + 1.0)
-                    kᵢ += kᵢⱼ
-                end
-                k[i] = kᵢ
+            kᵢ = 0.0
+            @turbo for j ∈ 1:N
+                kᵢⱼ = 1.0 / ( (abs(x[i] - x[j])/xscale)^lp + 1.0)
+                kᵢ += kᵢⱼ
             end
+            k[i] = kᵢ
             (i % 10 == 0) && next!(p)
         end
         return k
@@ -1196,15 +1288,33 @@
 
     """
     ```julia
-    k = invweight_age(age::AbstractArray; lp::Number=2, agescale::Number=38.0)
+    k = invweight_age(age::AbstractArray;
+        \tlp::Number=2, 
+        \tagescale::Number=38.0
+    )
     ```
 
     Find the inverse weights `k` (proportional to temporal sample density) for
     a set of geological samples with specified `age` (of crystallization, deposition, etc.).
     """
-    function invweight_age(age::AbstractArray; lp::Number=2, agescale::Number=38.0)
-        return invweight(age, agescale, lp=lp)
-    end
+    invweight_age(age::AbstractArray; lp::Number=2, agescale::Number=38.0) = invweight(age, agescale; lp)
     export invweight_age
+
+
+    """
+    ```julia
+    resamplingprobability(k; median_probability::Number=1/6)
+    ```
+
+    Calculate scaled resampling probabilities `p` given a vector of inverse weights `k` 
+    and a desired median resampling probability (1/6 by default).
+    """
+    function resamplingprobability(k; median_probability::Number=1/6)
+        median_k = 1/median_probability - 1
+        f = median_k / nanmedian(filter(isfinite, k))
+        p = @. 1 / ((k * f) + 1)
+        return p
+    end
+    export resamplingprobability
 
 ## --- End of file

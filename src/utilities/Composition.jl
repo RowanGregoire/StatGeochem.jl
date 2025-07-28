@@ -15,7 +15,7 @@ traceelements(::Type{T}) where {T<:AbstractComposition} = filter(k->!contains(St
 traceelements(::T) where {T<:AbstractComposition} = traceelements(T)
 export traceelements
 
-# Default constructor, given a an AbstractArray or NTuple of the appropriate length
+# Default constructor, given an AbstractArray or NTuple of the appropriate length
 @generated function (::Type{C})(v::Collection) where {T,C<:AbstractComposition{T}}
     result = :($C())
     for i in 1:fieldcount(C)
@@ -27,6 +27,87 @@ export traceelements
         :(return $result)
     )
 end
+# Less efficient but more general constructors, given some combination of keys and values
+function (::Type{C})(d::Dict) where {T,C<:AbstractComposition{T}}
+    names = fieldnames(C)
+    data = ntuple(i->(haskey(d, String(names[i])) ? T(d[String(names[i])]) : T(NaN)), fieldcount(C))
+    return C(data)
+end
+function (::Type{C})(nt::NamedTuple) where {T,C<:AbstractComposition{T}}
+    names = fieldnames(C)
+    data = ntuple(i->(haskey(nt, names[i]) ? T(nt[names[i]]) : T(NaN)), fieldcount(C))
+    return C(data)
+end
+function (::Type{C})(concentrations::Collection{<:Number}, elements::Collection{Symbol}) where {T,C<:AbstractComposition{T}}
+    names = fieldnames(C)
+    data = ntuple(i->(names[i] ∈ elements ? T(concentrations[findfirst(isequal(names[i], elements))]) : T(NaN)), fieldcount(C))
+    return C(data)
+end
+function (::Type{C})(concentrations::Collection{<:Number}, elements::Collection{<:AbstractString}) where {T,C<:AbstractComposition{T}}
+    names = String.(fieldnames(C))
+    data = ntuple(i->(names[i] ∈ elements ? T(concentrations[findfirst(isequal(names[i]), elements)]) : T(NaN)), fieldcount(C))
+    return C(data)
+end
+
+# Default conversions between compositions
+@generated function (::Type{C})(c::D) where {T, C<:LinearTraceComposition, D<:LinearTraceComposition{T}}
+    result = :($C())
+    for e in fieldnames(C)
+        if hasfield(D, e)
+            push!(result.args, :(c.$e))
+        else
+            push!(result.args, :(zero($T)))
+        end
+    end
+    return result
+end
+@generated function (::Type{C})(c::D) where {T, C<:LogTraceComposition, D<:LogTraceComposition{T}}
+    result = :($C())
+    for e in fieldnames(C)
+        if hasfield(D, e)
+            push!(result.args, :(c.$e))
+        else
+            push!(result.args, :(zero($T)))
+        end
+    end
+    return result
+end
+@generated function (::Type{C})(c::D) where {T, C<:LinearTraceComposition, D<:LogTraceComposition{T}}
+    result = :($C())
+    for e in majorelements(C)
+        if e ∈ majorelements(D)
+            push!(result.args, :(c.$e))
+        else
+            push!(result.args, :(zero($T)))
+        end
+    end
+    for e in traceelements(C)
+        if e ∈ traceelements(D)
+            push!(result.args, :($T(exp(c.$e))))
+        else
+            push!(result.args, :(zero($T)))
+        end
+    end
+    return result
+end
+@generated function (::Type{C})(c::D) where {T, C<:LogTraceComposition, D<:LinearTraceComposition{T}}
+    result = :($C())
+    for e in majorelements(C)
+        if e ∈ majorelements(D)
+            push!(result.args, :(c.$e))
+        else
+            push!(result.args, :(zero($T)))
+        end
+    end
+    for e in traceelements(C)
+        if e ∈ traceelements(D)
+            push!(result.args, :($T(log(c.$e))))
+        else
+            push!(result.args, :(typemin($T)))
+        end
+    end
+    return result
+end
 
 # Extract elements as an NTuple
 @generated function Base.ntuple(x::C) where {C<:AbstractComposition}
@@ -36,12 +117,30 @@ end
     end
     return result
 end
+@generated function majorelementvalues(x::C) where {C<:AbstractComposition}
+    result = Expr(:tuple,)
+    for e in majorelements(C)
+        push!(result.args, :(x.$e))
+    end
+    return result
+end
+export majorelementvalues
+@generated function traceelementvalues(x::C) where {C<:AbstractComposition}
+    result = Expr(:tuple,)
+    for e in traceelements(C)
+        push!(result.args, :(x.$e))
+    end
+    return result
+end
+export traceelementvalues
 
 # Default methods which assume fields are elements, which will be used
 # if a concrete type does not override with something more specific
 Base.keys(x::C) where {C<:AbstractComposition} = fieldnames(C)
 Base.haskey(x::C, key::Symbol) where {C<:AbstractComposition} = hasfield(C, key)
+Base.haskey(x::C, key::String) where {C<:AbstractComposition} = hasfield(C, Symbol(key))
 Base.getindex(x::AbstractComposition, key::Symbol) = getfield(x, key)
+Base.getindex(x::AbstractComposition, key::String) = getfield(x, Symbol(key))
 
 # Partial math interface, using generated functions so that we don't have to manually
 # write out all the field names for every concrete subtype of AbstractComposition
@@ -116,7 +215,7 @@ end
     for e in traceelements(C)
         push!(result.args, :(exp(randn(rng, T))))
     end
-    return :(normalize($result))
+    return :(renormalize($result))
 end
 @generated function Random.rand(rng::AbstractRNG, ::Random.SamplerType{C}) where {T, C<:LogTraceComposition{T}}
     result = :($C())
@@ -126,7 +225,7 @@ end
     for e in traceelements(C)
         push!(result.args, :(randn(rng, T)))
     end
-    return :(normalize($result))
+    return :(renormalize($result))
 end
 
 # Normalization
@@ -191,11 +290,11 @@ end
     )
 end
 
-function normalize(x::AbstractComposition; anhydrous::Bool=false) 
+function renormalize(x::AbstractComposition; anhydrous::Bool=false) 
     c = anhydrous ? normconstanhydrous(x) : normconst(x)
     return x/c
 end
-export normalize
+export renormalize
 
 function isnormalized(x::AbstractComposition; anhydrous::Bool=false)
     c = anhydrous ? normconstanhydrous(x) : normconst(x)
@@ -308,8 +407,101 @@ export NCKFMASHTOlogtrace
 # majorelements, traceelements and conversions
 majorelements(::Type{<:Union{NCKFMASHTOtrace, NCKFMASHTOlogtrace}}) = (:SiO2, :TiO2, :Al2O3, :FeO, :MgO, :CaO, :Na2O, :K2O, :O2, :H2O)
 traceelements(::Type{<:Union{NCKFMASHTOtrace, NCKFMASHTOlogtrace}}) = (:P, :Rb, :Cs, :Sr, :Ba, :Sc, :V, :Cr, :Mn, :Co, :Ni, :La, :Ce, :Nd, :Sm, :Eu, :Gd, :Tb, :Dy, :Yb, :Lu, :Y, :Zr, :Hf, :Nb, :Ta, :Mo, :W, :Th, :U)
-NCKFMASHTOlogtrace(x::NCKFMASHTOtrace) = NCKFMASHTOlogtrace((x[e] for e in majorelements(x))..., (log(x[e]) for e in traceelements(x))...,)
-NCKFMASHTOtrace(x::NCKFMASHTOlogtrace) = NCKFMASHTOtrace((x[e] for e in majorelements(x))..., (exp(x[e]) for e in traceelements(x))...,)
+
+struct NCKFMASHTOCO2trace{T} <: LinearTraceComposition{T}
+    SiO2::T
+    TiO2::T
+    Al2O3::T
+    FeO::T
+    MgO::T
+    CaO::T
+    Na2O::T
+    K2O::T
+    O2::T
+    H2O::T
+    CO2::T
+    P::T
+    Rb::T
+    Cs::T
+    Sr::T
+    Ba::T
+    Sc::T
+    V::T
+    Cr::T
+    Mn::T
+    Co::T
+    Ni::T
+    La::T
+    Ce::T
+    Nd::T
+    Sm::T
+    Eu::T
+    Gd::T
+    Tb::T
+    Dy::T
+    Yb::T
+    Lu::T
+    Y::T
+    Zr::T
+    Hf::T
+    Nb::T
+    Ta::T
+    Mo::T
+    W::T
+    Th::T
+    U::T
+end
+export NCKFMASHTOCO2trace
+
+struct NCKFMASHTOCO2logtrace{T} <: LogTraceComposition{T}
+    SiO2::T
+    TiO2::T
+    Al2O3::T
+    FeO::T
+    MgO::T
+    CaO::T
+    Na2O::T
+    K2O::T
+    O2::T
+    H2O::T
+    CO2::T
+    P::T
+    Rb::T
+    Cs::T
+    Sr::T
+    Ba::T
+    Sc::T
+    V::T
+    Cr::T
+    Mn::T
+    Co::T
+    Ni::T
+    La::T
+    Ce::T
+    Nd::T
+    Sm::T
+    Eu::T
+    Gd::T
+    Tb::T
+    Dy::T
+    Yb::T
+    Lu::T
+    Y::T
+    Zr::T
+    Hf::T
+    Nb::T
+    Ta::T
+    Mo::T
+    W::T
+    Th::T
+    U::T
+end
+export NCKFMASHTOCO2logtrace
+
+# majorelements, traceelements and conversions
+majorelements(::Type{<:Union{NCKFMASHTOCO2trace, NCKFMASHTOCO2logtrace}}) = (:SiO2, :TiO2, :Al2O3, :FeO, :MgO, :CaO, :Na2O, :K2O, :O2, :H2O, :CO2)
+traceelements(::Type{<:Union{NCKFMASHTOCO2trace, NCKFMASHTOCO2logtrace}}) = (:P, :Rb, :Cs, :Sr, :Ba, :Sc, :V, :Cr, :Mn, :Co, :Ni, :La, :Ce, :Nd, :Sm, :Eu, :Gd, :Tb, :Dy, :Yb, :Lu, :Y, :Zr, :Hf, :Nb, :Ta, :Mo, :W, :Th, :U)
+
 
 struct NCKFMASHTOCrtrace{T} <: LinearTraceComposition{T}
     SiO2::T
@@ -402,28 +594,179 @@ export NCKFMASHTOCrlogtrace
 # majorelements, traceelements and conversions
 majorelements(::Type{<:Union{NCKFMASHTOCrtrace, NCKFMASHTOCrlogtrace}}) = (:SiO2, :TiO2, :Al2O3, :Cr2O3, :FeO, :MgO, :CaO, :Na2O, :K2O, :O2, :H2O)
 traceelements(::Type{<:Union{NCKFMASHTOCrtrace, NCKFMASHTOCrlogtrace}}) = (:P, :Rb, :Cs, :Sr, :Ba, :Sc, :V, :Mn, :Co, :Ni, :La, :Ce, :Nd, :Sm, :Eu, :Gd, :Tb, :Dy, :Yb, :Lu, :Y, :Zr, :Hf, :Nb, :Ta, :Mo, :W, :Th, :U)
-NCKFMASHTOCrlogtrace(x::NCKFMASHTOCrtrace) = NCKFMASHTOCrlogtrace((x[e] for e in majorelements(x))..., (log(x[e]) for e in traceelements(x))...,)
-NCKFMASHTOCrtrace(x::NCKFMASHTOCrlogtrace) = NCKFMASHTOCrtrace((x[e] for e in majorelements(x))..., (exp(x[e]) for e in traceelements(x))...,)
 
-
-## -- Distributions of compositions
-abstract type CompositionDistribution{C} end
-
-struct CompositionNormal{T, C<:AbstractComposition{T}, D<:MvNormal{T}} <: CompositionDistribution{C}
-    mvndist::D
-    buffer::Vector{T}
+struct NCKFMASTtrace{T} <: LinearTraceComposition{T}
+    SiO2::T
+    TiO2::T
+    Al2O3::T
+    FeO::T
+    MgO::T
+    CaO::T
+    Na2O::T
+    K2O::T
+    P::T
+    Rb::T
+    Cs::T
+    Sr::T
+    Ba::T
+    Sc::T
+    V::T
+    Cr::T
+    Mn::T
+    Co::T
+    Ni::T
+    La::T
+    Ce::T
+    Nd::T
+    Sm::T
+    Eu::T
+    Gd::T
+    Tb::T
+    Dy::T
+    Yb::T
+    Lu::T
+    Y::T
+    Zr::T
+    Hf::T
+    Nb::T
+    Ta::T
+    Mo::T
+    W::T
+    Th::T
+    U::T
 end
-function CompositionNormal(::Type{C}, μ::AbstractVector, Σ::AbstractMatrix) where {T, C<:AbstractComposition{T}}
-    @assert length(μ) == fieldcount(C)
-    @assert size(Σ,1) == size(Σ,1) == fieldcount(C)
-    d = MvNormal(μ, Σ)
-    return CompositionNormal{T,C,typeof(d)}(d, zeros(T, fieldcount(C)))
-end
-export CompositionNormal
+export NCKFMASTtrace
 
-# Interface for drawing Compositions from MvNormal distribution
-Random.gentype(::Type{<:CompositionDistribution{C}}) where {C<:AbstractComposition} = C
-function Random.rand(rng::AbstractRNG, d::Random.SamplerTrivial{<:CompositionNormal{T,C}}) where {T,C<:AbstractComposition{T}}
-    rand!(rng, d.self.mvndist, d.self.buffer) 
-    return normalize(C(d.self.buffer))
+struct NCKFMASTlogtrace{T} <: LogTraceComposition{T}
+    SiO2::T
+    TiO2::T
+    Al2O3::T
+    FeO::T
+    MgO::T
+    CaO::T
+    Na2O::T
+    K2O::T
+    P::T
+    Rb::T
+    Cs::T
+    Sr::T
+    Ba::T
+    Sc::T
+    V::T
+    Cr::T
+    Mn::T
+    Co::T
+    Ni::T
+    La::T
+    Ce::T
+    Nd::T
+    Sm::T
+    Eu::T
+    Gd::T
+    Tb::T
+    Dy::T
+    Yb::T
+    Lu::T
+    Y::T
+    Zr::T
+    Hf::T
+    Nb::T
+    Ta::T
+    Mo::T
+    W::T
+    Th::T
+    U::T
 end
+export NCKFMASTlogtrace
+
+# majorelements, traceelements and conversions
+majorelements(::Type{<:Union{NCKFMASTtrace, NCKFMASTlogtrace}}) = (:SiO2, :TiO2, :Al2O3, :FeO, :MgO, :CaO, :Na2O, :K2O,)
+traceelements(::Type{<:Union{NCKFMASTtrace, NCKFMASTlogtrace}}) = (:P, :Rb, :Cs, :Sr, :Ba, :Sc, :V, :Cr, :Mn, :Co, :Ni, :La, :Ce, :Nd, :Sm, :Eu, :Gd, :Tb, :Dy, :Yb, :Lu, :Y, :Zr, :Hf, :Nb, :Ta, :Mo, :W, :Th, :U)
+
+struct NCKFMASTCrtrace{T} <: LinearTraceComposition{T}
+    SiO2::T
+    TiO2::T
+    Al2O3::T
+    Cr2O3::T
+    FeO::T
+    MgO::T
+    CaO::T
+    Na2O::T
+    K2O::T
+    P::T
+    Rb::T
+    Cs::T
+    Sr::T
+    Ba::T
+    Sc::T
+    V::T
+    Mn::T
+    Co::T
+    Ni::T
+    La::T
+    Ce::T
+    Nd::T
+    Sm::T
+    Eu::T
+    Gd::T
+    Tb::T
+    Dy::T
+    Yb::T
+    Lu::T
+    Y::T
+    Zr::T
+    Hf::T
+    Nb::T
+    Ta::T
+    Mo::T
+    W::T
+    Th::T
+    U::T
+end
+export NCKFMASTCrtrace
+
+struct NCKFMASTCrlogtrace{T} <: LogTraceComposition{T}
+    SiO2::T
+    TiO2::T
+    Al2O3::T
+    Cr2O3::T
+    FeO::T
+    MgO::T
+    CaO::T
+    Na2O::T
+    K2O::T
+    P::T
+    Rb::T
+    Cs::T
+    Sr::T
+    Ba::T
+    Sc::T
+    V::T
+    Mn::T
+    Co::T
+    Ni::T
+    La::T
+    Ce::T
+    Nd::T
+    Sm::T
+    Eu::T
+    Gd::T
+    Tb::T
+    Dy::T
+    Yb::T
+    Lu::T
+    Y::T
+    Zr::T
+    Hf::T
+    Nb::T
+    Ta::T
+    Mo::T
+    W::T
+    Th::T
+    U::T
+end
+export NCKFMASTCrlogtrace
+
+# majorelements, traceelements and conversions
+majorelements(::Type{<:Union{NCKFMASTCrtrace, NCKFMASTCrlogtrace}}) = (:SiO2, :TiO2, :Al2O3, :Cr2O3, :FeO, :MgO, :CaO, :Na2O, :K2O,)
+traceelements(::Type{<:Union{NCKFMASTCrtrace, NCKFMASTCrlogtrace}}) = (:P, :Rb, :Cs, :Sr, :Ba, :Sc, :V, :Mn, :Co, :Ni, :La, :Ce, :Nd, :Sm, :Eu, :Gd, :Tb, :Dy, :Yb, :Lu, :Y, :Zr, :Hf, :Nb, :Ta, :Mo, :W, :Th, :U)

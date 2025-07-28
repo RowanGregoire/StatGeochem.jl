@@ -13,9 +13,9 @@ module StatGeochem
 
     # General requirements
     using DelimitedFiles: readdlm, writedlm
-    using Distributions: MvNormal
+    using Distributions
     using Downloads: download
-    using LazyArtifacts: @artifact_str
+    using LazyArtifacts
     using LogExpFunctions: logaddexp
     using ProgressMeter: @showprogress, update!, next!, Progress
     using Random
@@ -39,6 +39,7 @@ module StatGeochem
 
     using Perple_X_jll
     include("resources/Perplex.jl")
+    include("resources/Melts.jl")
 
     using FileIO: load
     using HDF5: h5read
